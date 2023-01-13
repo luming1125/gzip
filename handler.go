@@ -1,34 +1,31 @@
 package gzip
 
 import (
-	"compress/gzip"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/gzip"
 )
 
 type gzipHandler struct {
 	*Options
 	gzPool sync.Pool
+	level  int
 }
 
 func newGzipHandler(level int, options ...Option) *gzipHandler {
+	if level < gzip.HuffmanOnly || level > gzip.BestCompression {
+		panic(fmt.Errorf("gzip: invalid compression level: %d", level))
+	}
+
 	handler := &gzipHandler{
 		Options: DefaultOptions,
-		gzPool: sync.Pool{
-			New: func() interface{} {
-				gz, err := gzip.NewWriterLevel(ioutil.Discard, level)
-				if err != nil {
-					panic(err)
-				}
-				return gz
-			},
-		},
+		level:   level,
 	}
 	for _, setter := range options {
 		setter(handler.Options)
@@ -45,10 +42,8 @@ func (g *gzipHandler) Handle(c *gin.Context) {
 		return
 	}
 
-	gz := g.gzPool.Get().(*gzip.Writer)
+	gz := g.getGzipWriter(c.Writer)
 	defer g.gzPool.Put(gz)
-	defer gz.Reset(ioutil.Discard)
-	gz.Reset(c.Writer)
 
 	c.Header("Content-Encoding", "gzip")
 	c.Header("Vary", "Accept-Encoding")
@@ -80,4 +75,20 @@ func (g *gzipHandler) shouldCompress(req *http.Request) bool {
 	}
 
 	return true
+}
+
+func (g *gzipHandler) getGzipWriter(w io.Writer) *gzip.Writer {
+	gzp := g.gzPool.Get()
+	if gzp != nil {
+		gz := gzp.(*gzip.Writer)
+		gz.Reset(w)
+		return gz
+	}
+
+	gz, err := gzip.NewWriterLevel(w, g.level)
+	if err != nil {
+		panic(err)
+	}
+
+	return gz
 }
